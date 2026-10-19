@@ -10,6 +10,7 @@ ReturnType = Literal["simple", "log"]
 def to_returns(
     prices: pd.Series | pd.DataFrame,
     method: ReturnType = "simple",
+    dropna: bool = True,
 ) -> pd.Series | pd.DataFrame:
     """
     Convert a price series into returns.
@@ -26,6 +27,10 @@ def to_returns(
 
         - "log":
             r_t = ln(P_t / P_{t-1})
+    dropna : bool, default=True
+        If True, remove rows containing missing return values.
+        If False, preserve missing values, which is useful for
+        unbalanced asset universes with different inception dates.
 
     Returns
     -------
@@ -48,12 +53,26 @@ def to_returns(
         raise ValueError("method must be either 'simple' or 'log'")
 
     if method == "simple":
-        return prices.pct_change(fill_method=None).dropna()
+        result = prices.pct_change(fill_method=None)
 
-    if (prices <= 0).any().any() if isinstance(prices, pd.DataFrame) else (prices <= 0).any():
-        raise ValueError("log returns require strictly positive prices")
+    else:
+        if (
+            (prices <= 0).any().any()
+            if isinstance(prices, pd.DataFrame)
+            else (prices <= 0).any()
+        ):
+            raise ValueError(
+                "log returns require strictly positive prices"
+            )
 
-    return np.log(prices / prices.shift(1)).dropna()
+        result = np.log(
+            prices / prices.shift(1)
+        )
+
+    if dropna:
+        result = result.dropna()
+
+    return result
 
 
 

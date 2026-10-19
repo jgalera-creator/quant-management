@@ -217,3 +217,55 @@ def test_load_prices_requires_at_least_one_ticker():
             tickers=[],
             start="2026-01-01",
         )
+
+
+def test_load_prices_preserves_partial_missing_data(
+    tmp_path,
+    monkeypatch,
+):
+    dates = pd.date_range(
+        "2015-01-31",
+        periods=4,
+        freq="ME",
+    )
+
+    columns = pd.MultiIndex.from_tuples(
+        [
+            ("Close", "XLK"),
+            ("Close", "XLRE"),
+        ]
+    )
+
+    fake_data = pd.DataFrame(
+        [
+            [40.0, None],
+            [41.0, None],
+            [42.0, 30.0],
+            [43.0, 31.0],
+        ],
+        index=dates,
+        columns=columns,
+    )
+
+    def fake_download(**kwargs):
+        return fake_data
+
+    monkeypatch.setattr(
+        "quantmgmt.data.loader.yf.download",
+        fake_download,
+    )
+
+    result = load_prices(
+        tickers=["XLK", "XLRE"],
+        start="2015-01-01",
+        interval="1mo",
+        cache_dir=tmp_path,
+    )
+
+    assert len(result) == 4
+
+    assert result["XLK"].notna().all()
+
+    assert result["XLRE"].isna().sum() == 2
+
+    assert result["XLRE"].notna().sum() == 2
