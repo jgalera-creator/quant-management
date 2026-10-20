@@ -136,26 +136,215 @@ def _build_bounds(
     return None
 
 
+def _validate_previous_weights(
+    previous_weights: pd.Series | None,
+    assets: pd.Index,
+) -> np.ndarray | None:
+    """
+    Validate and align previous portfolio weights.
+
+    Parameters
+    ----------
+    previous_weights : pd.Series or None
+        Previous portfolio weights indexed by asset.
+    assets : pd.Index
+        Asset universe and order expected by the optimizer.
+
+    Returns
+    -------
+    np.ndarray or None
+        Previous weights aligned to the optimizer asset order.
+
+    Raises
+    ------
+    TypeError
+        If previous_weights is not a pandas Series.
+    ValueError
+        If asset labels differ, labels are duplicated,
+        or weights do not sum to one.
+    """
+    if previous_weights is None:
+        return None
+
+    if not isinstance(previous_weights, pd.Series):
+        raise TypeError(
+            "previous_weights must be a pandas Series"
+        )
+
+    if not previous_weights.index.is_unique:
+        raise ValueError(
+            "previous_weights asset labels must be unique"
+        )
+
+    if not assets.is_unique:
+        raise ValueError(
+            "optimizer asset labels must be unique"
+        )
+
+    if set(previous_weights.index) != set(assets):
+        raise ValueError(
+            "previous_weights must contain the same assets "
+            "as the optimizer"
+        )
+
+    if not np.isclose(
+        previous_weights.sum(),
+        1.0,
+        atol=1e-8,
+    ):
+        raise ValueError(
+            "previous_weights must sum to 1"
+        )
+
+    aligned_weights = previous_weights.reindex(
+        assets
+    )
+
+    return aligned_weights.to_numpy()
+
+
+def _build_turnover_constraint(
+    previous_weights: pd.Series | None,
+    assets: pd.Index,
+    turnover_limit: float | None,
+) -> dict | None:
+    """
+    Build a turnover constraint for a standard weight vector.
+
+    Turnover is defined as:
+
+        sum(abs(w - w_previous))
+
+    This helper is used by optimizers whose decision vector contains
+    only portfolio weights.
+    """
+    if turnover_limit is None:
+        return None
+
+    if turnover_limit < 0:
+        raise ValueError(
+            "turnover_limit must be non-negative"
+        )
+
+    previous = _validate_previous_weights(
+        previous_weights,
+        assets,
+    )
+
+    if previous is None:
+        raise ValueError(
+            "previous_weights are required when "
+            "turnover_limit is specified"
+        )
+
+    return {
+        "type": "ineq",
+        "fun": lambda weights: (
+            turnover_limit
+            - np.sum(
+                np.abs(weights - previous)
+            )
+        ),
+    }
+
+
+def _build_linearized_turnover_constraints(
+    previous_weights: np.ndarray,
+    n_assets: int,
+    turnover_limit: float,
+) -> list[dict]:
+    """
+    Build linearized turnover constraints using auxiliary variables.
+
+    The optimization vector is:
+
+        x = [w_1, ..., w_n, u_1, ..., u_n]
+
+    with:
+
+        u_i >= |w_i - w_i_previous|
+
+    and:
+
+        sum(u_i) <= turnover_limit
+    """
+    if turnover_limit < 0:
+        raise ValueError(
+            "turnover_limit must be non-negative"
+        )
+
+    def positive_difference_constraint(x):
+        weights = x[:n_assets]
+        auxiliary = x[n_assets:]
+
+        return (
+            auxiliary
+            - (weights - previous_weights)
+        )
+
+    def negative_difference_constraint(x):
+        weights = x[:n_assets]
+        auxiliary = x[n_assets:]
+
+        return (
+            auxiliary
+            + (weights - previous_weights)
+        )
+
+    def total_turnover_constraint(x):
+        auxiliary = x[n_assets:]
+
+        return (
+            turnover_limit
+            - np.sum(auxiliary)
+        )
+
+    return [
+        {
+            "type": "ineq",
+            "fun": positive_difference_constraint,
+        },
+        {
+            "type": "ineq",
+            "fun": negative_difference_constraint,
+        },
+        {
+            "type": "ineq",
+            "fun": total_turnover_constraint,
+        },
+    ]
+
+
 def min_variance(
     covariance_matrix: pd.DataFrame,
     long_only: bool = True,
     max_weight: float | None = None,
+    previous_weights: pd.Series | None = None,
+    turnover_limit: float | None = None,
 ) -> pd.Series:
     """
     Compute the global minimum-variance portfolio.
     """
     n_assets = len(covariance_matrix)
 
-    initial_weights = np.full(
-        n_assets,
-        1.0 / n_assets,
-    )
-
     bounds = _build_bounds(
         n_assets=n_assets,
         long_only=long_only,
         max_weight=max_weight,
     )
+
+    previous = _validate_previous_weights(
+        previous_weights,
+        covariance_matrix.index,
+    )
+
+    if previous is not None:
+        initial_weights = previous.copy()
+    else:
+        initial_weights = np.full(
+            n_assets,
+            1.0 / n_assets,
+        )
 
     constraints = [
         {
@@ -165,6 +354,17 @@ def min_variance(
             ),
         }
     ]
+
+    turnover_constraint = _build_turnover_constraint(
+        previous_weights=previous_weights,
+        assets=covariance_matrix.index,
+        turnover_limit=turnover_limit,
+    )
+
+    if turnover_constraint is not None:
+        constraints.append(
+            turnover_constraint
+        )
 
     result = minimize(
         fun=portfolio_variance,
@@ -189,6 +389,170 @@ def min_variance(
         index=covariance_matrix.index,
         name="weight",
     )
+
+
+def max_sharpe(
+    expected_returns: pd.Series,
+    covariance_matrix: pd.DataFrame,
+    risk_free_rate: float = 0.0,
+    long_only: bool = True,
+    max_weight: float | None = None,
+    previous_weights: pd.Series | None = None,
+    turnover_limit: float | None = None,
+) -> pd.Series:
+    """
+    Compute the maximum-Sharpe portfolio.
+
+    Optionally constrain turnover relative to a previous portfolio.
+    """
+    if not expected_returns.index.equals(
+        covariance_matrix.index
+    ):
+        raise ValueError(
+            "expected_returns and covariance_matrix "
+            "must contain assets in the same order"
+        )
+
+    n_assets = len(expected_returns)
+
+    weight_bounds = _build_bounds(
+        n_assets=n_assets,
+        long_only=long_only,
+        max_weight=max_weight,
+    )
+
+    previous = _validate_previous_weights(
+        previous_weights,
+        expected_returns.index,
+    )
+
+    # Standard optimization when turnover is not constrained.
+    if turnover_limit is None:
+        initial_weights = (
+            previous.copy()
+            if previous is not None
+            else np.full(
+                n_assets,
+                1.0 / n_assets,
+            )
+        )
+
+        constraints = [
+            {
+                "type": "eq",
+                "fun": lambda weights: (
+                    np.sum(weights) - 1.0
+                ),
+            }
+        ]
+
+        result = minimize(
+            fun=negative_sharpe_ratio,
+            x0=initial_weights,
+            args=(
+                expected_returns,
+                covariance_matrix,
+                risk_free_rate,
+            ),
+            method="SLSQP",
+            bounds=weight_bounds,
+            constraints=constraints,
+            options={
+                "ftol": 1e-12,
+                "maxiter": 1000,
+            },
+        )
+
+        if not result.success:
+            raise ValueError(
+                f"optimization failed: {result.message}"
+            )
+
+        optimal_weights = result.x
+
+    # Linearized formulation when turnover is constrained.
+    else:
+        if previous is None:
+            raise ValueError(
+                "previous_weights are required when "
+                "turnover_limit is specified"
+            )
+
+        if turnover_limit < 0:
+            raise ValueError(
+                "turnover_limit must be non-negative"
+            )
+
+        initial_x = np.concatenate(
+            [
+                previous,
+                np.zeros(n_assets),
+            ]
+        )
+
+        if weight_bounds is None:
+            augmented_bounds = (
+                [(None, None)] * n_assets
+                + [(0.0, None)] * n_assets
+            )
+        else:
+            augmented_bounds = (
+                list(weight_bounds)
+                + [(0.0, None)] * n_assets
+            )
+
+        constraints = [
+            {
+                "type": "eq",
+                "fun": lambda x: (
+                    np.sum(x[:n_assets]) - 1.0
+                ),
+            }
+        ]
+
+        constraints.extend(
+            _build_linearized_turnover_constraints(
+                previous_weights=previous,
+                n_assets=n_assets,
+                turnover_limit=turnover_limit,
+            )
+        )
+
+        def augmented_objective(x):
+            weights = x[:n_assets]
+
+            return negative_sharpe_ratio(
+                weights,
+                expected_returns,
+                covariance_matrix,
+                risk_free_rate,
+            )
+
+        result = minimize(
+            fun=augmented_objective,
+            x0=initial_x,
+            method="SLSQP",
+            bounds=augmented_bounds,
+            constraints=constraints,
+            options={
+                "ftol": 1e-12,
+                "maxiter": 1000,
+            },
+        )
+
+        if not result.success:
+            raise ValueError(
+                f"optimization failed: {result.message}"
+            )
+
+        optimal_weights = result.x[:n_assets]
+
+    return pd.Series(
+        optimal_weights,
+        index=expected_returns.index,
+        name="weight",
+    )
+
 
 def negative_sharpe_ratio(
     weights: np.ndarray,
@@ -219,69 +583,72 @@ def negative_sharpe_ratio(
     return -sharpe
 
 
-def max_sharpe(
-    expected_returns: pd.Series,
-    covariance_matrix: pd.DataFrame,
-    risk_free_rate: float = 0.0,
-    long_only: bool = True,
-    max_weight: float | None = None,
-) -> pd.Series:
+
+def _build_linearized_turnover_constraints(
+    previous_weights: np.ndarray,
+    n_assets: int,
+    turnover_limit: float,
+) -> list[dict]:
     """
-    Compute the maximum-Sharpe portfolio.
+    Build linearized turnover constraints using auxiliary variables.
+
+    The optimization vector is:
+
+        x = [w_1, ..., w_n, u_1, ..., u_n]
+
+    with:
+
+        u_i >= |w_i - w_i_previous|
+
+    and:
+
+        sum(u_i) <= turnover_limit
     """
-    if not expected_returns.index.equals(
-        covariance_matrix.index
-    ):
+    if turnover_limit < 0:
         raise ValueError(
-            "expected_returns and covariance_matrix "
-            "must contain assets in the same order"
+            "turnover_limit must be non-negative"
         )
 
-    n_assets = len(expected_returns)
+    def positive_difference_constraint(x):
+        weights = x[:n_assets]
+        auxiliary = x[n_assets:]
 
-    initial_weights = np.full(
-        n_assets,
-        1.0 / n_assets,
-    )
+        return (
+            auxiliary
+            - (weights - previous_weights)
+        )
 
-    bounds = _build_bounds(
-        n_assets=n_assets,
-        long_only=long_only,
-        max_weight=max_weight,
-    )
+    def negative_difference_constraint(x):
+        weights = x[:n_assets]
+        auxiliary = x[n_assets:]
 
-    constraints = [
+        return (
+            auxiliary
+            + (weights - previous_weights)
+        )
+
+    def total_turnover_constraint(x):
+        auxiliary = x[n_assets:]
+
+        return (
+            turnover_limit
+            - np.sum(auxiliary)
+        )
+
+    return [
         {
-            "type": "eq",
-            "fun": lambda weights: (
-                np.sum(weights) - 1.0
-            ),
-        }
+            "type": "ineq",
+            "fun": positive_difference_constraint,
+        },
+        {
+            "type": "ineq",
+            "fun": negative_difference_constraint,
+        },
+        {
+            "type": "ineq",
+            "fun": total_turnover_constraint,
+        },
     ]
-
-    result = minimize(
-        fun=negative_sharpe_ratio,
-        x0=initial_weights,
-        args=(
-            expected_returns,
-            covariance_matrix,
-            risk_free_rate,
-        ),
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-    )
-
-    if not result.success:
-        raise ValueError(
-            f"optimization failed: {result.message}"
-        )
-
-    return pd.Series(
-        result.x,
-        index=expected_returns.index,
-        name="weight",
-    )
 
 
 def efficient_frontier(

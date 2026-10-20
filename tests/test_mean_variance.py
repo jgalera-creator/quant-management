@@ -546,3 +546,174 @@ def test_portfolio_variance():
         result,
         expected,
     )
+
+
+def test_max_sharpe_respects_turnover_limit():
+    expected_returns = pd.Series(
+        {
+            "A": 0.20,
+            "B": 0.15,
+            "C": 0.10,
+        }
+    )
+
+    covariance = pd.DataFrame(
+        np.eye(3) * 0.04,
+        index=expected_returns.index,
+        columns=expected_returns.index,
+    )
+
+    previous_weights = pd.Series(
+        {
+            "A": 1 / 3,
+            "B": 1 / 3,
+            "C": 1 / 3,
+        }
+    )
+
+    weights = max_sharpe(
+        expected_returns,
+        covariance,
+        previous_weights=previous_weights,
+        turnover_limit=0.20,
+    )
+
+    turnover = np.abs(
+        weights - previous_weights
+    ).sum()
+
+    assert turnover <= 0.20 + 1e-6
+    assert np.isclose(weights.sum(), 1.0)
+
+
+def test_min_variance_respects_turnover_limit():
+    covariance = pd.DataFrame(
+        [
+            [0.01, 0.00, 0.00],
+            [0.00, 0.04, 0.00],
+            [0.00, 0.00, 0.09],
+        ],
+        index=["A", "B", "C"],
+        columns=["A", "B", "C"],
+    )
+
+    previous_weights = pd.Series(
+        {
+            "A": 1 / 3,
+            "B": 1 / 3,
+            "C": 1 / 3,
+        }
+    )
+
+    weights = min_variance(
+        covariance,
+        previous_weights=previous_weights,
+        turnover_limit=0.10,
+    )
+
+    turnover = np.abs(
+        weights - previous_weights
+    ).sum()
+
+    assert turnover <= 0.10 + 1e-6
+    assert np.isclose(weights.sum(), 1.0)
+
+
+def test_turnover_requires_previous_weights():
+    expected_returns = pd.Series(
+        {
+            "A": 0.10,
+            "B": 0.15,
+        }
+    )
+
+    covariance = pd.DataFrame(
+        [
+            [0.04, 0.01],
+            [0.01, 0.09],
+        ],
+        index=expected_returns.index,
+        columns=expected_returns.index,
+    )
+
+    with pytest.raises(ValueError):
+        max_sharpe(
+            expected_returns,
+            covariance,
+            turnover_limit=0.20,
+        )
+
+
+def test_previous_weights_must_sum_to_one():
+    expected_returns = pd.Series(
+        {
+            "A": 0.10,
+            "B": 0.15,
+        }
+    )
+
+    covariance = pd.DataFrame(
+        [
+            [0.04, 0.01],
+            [0.01, 0.09],
+        ],
+        index=expected_returns.index,
+        columns=expected_returns.index,
+    )
+
+    previous_weights = pd.Series(
+        {
+            "A": 0.50,
+            "B": 0.40,
+        }
+    )
+
+    with pytest.raises(ValueError):
+        max_sharpe(
+            expected_returns,
+            covariance,
+            previous_weights=previous_weights,
+            turnover_limit=0.20,
+        )
+
+
+def test_previous_weights_can_have_different_order():
+    expected_returns = pd.Series(
+        {
+            "A": 0.10,
+            "B": 0.15,
+            "C": 0.12,
+        }
+    )
+
+    covariance = pd.DataFrame(
+        np.eye(3) * 0.04,
+        index=expected_returns.index,
+        columns=expected_returns.index,
+    )
+
+    previous_weights = pd.Series(
+        {
+            "C": 0.20,
+            "A": 0.50,
+            "B": 0.30,
+        }
+    )
+
+    weights = max_sharpe(
+        expected_returns,
+        covariance,
+        previous_weights=previous_weights,
+        turnover_limit=0.20,
+    )
+
+    aligned_previous = previous_weights.reindex(
+        expected_returns.index
+    )
+
+    turnover = np.abs(
+        weights - aligned_previous
+    ).sum()
+
+    assert turnover <= 0.20 + 1e-6
+    assert np.isclose(weights.sum(), 1.0)
