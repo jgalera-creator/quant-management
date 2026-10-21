@@ -15,6 +15,7 @@ dependencies = [
     "scipy>=1.18.1",
     "pandas-datareader>=0.10",
     "statsmodels>=0.14",
+    "matplotlib>=3.9",
 ]
 
 [project.optional-dependencies]
