@@ -8,3 +8,6 @@ __pycache__/
 data/cache/*
 !data/cache/.gitkeep
 notebooks/data/cache/*
+
+# Practice 3 generated results
+data/p3_results/
