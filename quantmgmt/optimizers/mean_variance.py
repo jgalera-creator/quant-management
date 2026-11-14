@@ -380,7 +380,7 @@ def min_variance(
     )
 
     if not result.success:
-        raise ValueError(
+        raise OptimizationError(
             f"optimization failed: {result.message}"
         )
 
@@ -464,7 +464,7 @@ def max_sharpe(
         )
 
         if not result.success:
-            raise ValueError(
+            raise OptimizationError(
                 f"optimization failed: {result.message}"
             )
 
@@ -541,7 +541,7 @@ def max_sharpe(
         )
 
         if not result.success:
-            raise ValueError(
+            raise OptimizationError(
                 f"optimization failed: {result.message}"
             )
 
@@ -790,7 +790,7 @@ def efficient_frontier(
         )
 
         if not result.success:
-            raise ValueError(
+            raise OptimizationError(
                 "efficient-frontier optimization failed "
                 f"for target return {target_return:.6f}: "
                 f"{result.message}"
@@ -929,7 +929,7 @@ def target_volatility(
     )
 
     if not result.success:
-        raise ValueError(
+        raise OptimizationError(
             f"optimization failed: {result.message}"
         )
 
@@ -952,3 +952,10 @@ def target_volatility(
         index=expected_returns.index,
         name="weight",
     )
+
+
+
+
+
+class OptimizationError(ValueError):
+    """The numerical optimizer failed to converge."""
