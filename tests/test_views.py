@@ -100,3 +100,137 @@ def test_momentum_requires_multiple_assets(sample_returns):
             sample_returns[["A"]],
             sample_returns.index[-1],
         )
+
+
+
+def three_relative_views(
+    historical_returns: pd.DataFrame,
+    rebalance_date: pd.Timestamp,
+    momentum_months: int = 12,
+    expected_spread: float = 0.03,
+    confidence: float = 0.60,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """
+    Construct three Black-Litterman relative views.
+
+    V1: Dynamic 12-month momentum.
+    V2: GLD outperforms DBC by 1% annually.
+    V3: SPY outperforms EFA by 1.5% annually.
+
+    All Q values are annualized excess-return spreads.
+    """
+
+    required_assets = {"GLD", "DBC", "SPY", "EFA"}
+
+    if not isinstance(historical_returns, pd.DataFrame):
+        raise TypeError(
+            "historical_returns must be a DataFrame"
+        )
+
+    missing = required_assets - set(
+        historical_returns.columns
+    )
+
+    if missing:
+        raise ValueError(
+            f"missing assets for strategic views: {sorted(missing)}"
+        )
+
+    # V1: Use the existing, validated momentum model.
+    P_momentum, Q_momentum, C_momentum = (
+        momentum_relative_view(
+            historical_returns=historical_returns,
+            rebalance_date=rebalance_date,
+            momentum_months=momentum_months,
+            expected_spread=expected_spread,
+            confidence=confidence,
+        )
+    )
+
+    assets = historical_returns.columns
+
+    # Build strategic relative views.
+    P_strategic = pd.DataFrame(
+        0.0,
+        index=[
+            "GLD_outperforms_DBC",
+            "SPY_outperforms_EFA",
+        ],
+        columns=assets,
+    )
+
+    P_strategic.loc[
+        "GLD_outperforms_DBC", "GLD"
+    ] = 1.0
+
+    P_strategic.loc[
+        "GLD_outperforms_DBC", "DBC"
+    ] = -1.0
+
+    P_strategic.loc[
+        "SPY_outperforms_EFA", "SPY"
+    ] = 1.0
+
+    P_strategic.loc[
+        "SPY_outperforms_EFA", "EFA"
+    ] = -1.0
+
+    Q_strategic = pd.Series(
+        {
+            "GLD_outperforms_DBC": 0.01,
+            "SPY_outperforms_EFA": 0.015,
+        },
+        name="expected_spread",
+    )
+
+    C_strategic = pd.Series(
+        {
+            "GLD_outperforms_DBC": 0.55,
+            "SPY_outperforms_EFA": 0.55,
+        },
+        name="confidence",
+    )
+
+    # Avoid collisions when the dynamic view coincides
+    # with one of the strategic views.
+    P_momentum = P_momentum.copy()
+    Q_momentum = Q_momentum.copy()
+    C_momentum = C_momentum.copy()
+
+    P_momentum.index = ["momentum_relative"]
+    Q_momentum.index = ["momentum_relative"]
+    C_momentum.index = ["momentum_relative"]
+
+    P = pd.concat(
+        [P_momentum, P_strategic],
+        axis=0,
+    )
+
+    Q = pd.concat(
+        [Q_momentum, Q_strategic],
+        axis=0,
+    )
+
+    confidences = pd.concat(
+        [C_momentum, C_strategic],
+        axis=0,
+    )
+
+    # Explicit alignment.
+    Q = Q.reindex(P.index)
+    confidences = confidences.reindex(P.index)
+
+    if P.shape != (3, len(assets)):
+        raise ValueError("invalid view matrix shape")
+
+    if not P.index.is_unique:
+        raise ValueError("duplicate view labels")
+
+    if not (
+        np.isfinite(P.to_numpy()).all()
+        and np.isfinite(Q.to_numpy()).all()
+        and np.isfinite(confidences.to_numpy()).all()
+    ):
+        raise ValueError("non-finite view parameters")
+
+    return P, Q, confidences

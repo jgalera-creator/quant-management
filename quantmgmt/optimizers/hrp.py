@@ -471,3 +471,61 @@ def risk_contribution(
         },
         index=assets,
     )
+
+
+
+def inverse_volatility_weights(
+    covariance_matrix: pd.DataFrame,
+) -> pd.Series:
+    """
+    Naive inverse-volatility portfolio.
+
+    Weights are proportional to the inverse
+    of individual asset volatility.
+    """
+    if not isinstance(covariance_matrix, pd.DataFrame):
+        raise TypeError(
+            "covariance_matrix must be a DataFrame"
+        )
+
+    if covariance_matrix.empty:
+        raise ValueError(
+            "covariance_matrix cannot be empty"
+        )
+
+    if (
+        not covariance_matrix.index.is_unique
+        or not covariance_matrix.columns.is_unique
+        or not covariance_matrix.index.equals(
+            covariance_matrix.columns
+        )
+    ):
+        raise ValueError(
+            "covariance labels must be aligned and unique"
+        )
+
+    diagonal = np.diag(
+        covariance_matrix.to_numpy(dtype=float)
+    )
+
+    if not np.isfinite(diagonal).all():
+        raise ValueError(
+            "invalid covariance diagonal"
+        )
+
+    if (diagonal <= 0).any():
+        raise ValueError(
+            "asset variances must be positive"
+        )
+
+    volatilities = np.sqrt(diagonal)
+
+    inverse_vol = 1.0 / volatilities
+
+    weights = inverse_vol / inverse_vol.sum()
+
+    return pd.Series(
+        weights,
+        index=covariance_matrix.index,
+        name="weight",
+    )

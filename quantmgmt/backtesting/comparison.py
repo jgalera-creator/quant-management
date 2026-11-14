@@ -15,6 +15,7 @@ from quantmgmt.backtesting.strategies import (
 
 from quantmgmt.backtesting.views import (
     momentum_relative_view,
+    three_relative_views,
 )
 
 
@@ -65,6 +66,9 @@ def run_strategy_comparison(
     lookback_months: int = 36,
     initial_capital: float = 100_000.0,
     transaction_cost_bps: float = 0.0,
+    bl_view_mode: str = "one",
+    include_gld_view: bool = True,
+    include_spy_view: bool = True,
 ) -> dict:
     """
     Run a common walk-forward comparison of five strategies.
@@ -163,13 +167,35 @@ def run_strategy_comparison(
 
             if strategy_name == "black_litterman":
 
-                P, Q, confidences = momentum_relative_view(
-                    historical_returns=historical_returns,
-                    rebalance_date=rebalance_date,
-                    momentum_months=momentum_months,
-                    expected_spread=expected_spread,
-                    confidence=confidence,
-                )
+                if bl_view_mode not in {"one", "three"}:
+                    raise ValueError("bl_view_mode must be 'one' or 'three'")
+
+                if bl_view_mode == "one":
+
+                    P, Q, confidences = momentum_relative_view(
+                        historical_returns=historical_returns,
+                        rebalance_date=rebalance_date,
+                        momentum_months=momentum_months,
+                        expected_spread=expected_spread,
+                        confidence=confidence,
+                    )
+
+                elif bl_view_mode == "three":
+
+                    P, Q, confidences = three_relative_views(
+                        historical_returns=historical_returns,
+                        rebalance_date=rebalance_date,
+                        momentum_months=momentum_months,
+                        expected_spread=expected_spread,
+                        confidence=confidence,
+                        include_gld_view=include_gld_view,
+                        include_spy_view=include_spy_view,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"unsupported bl_view_mode: {bl_view_mode}"
+                    )
 
                 return compute_strategy_weights(
                     returns=historical_returns,
